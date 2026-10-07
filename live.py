@@ -17,6 +17,25 @@ SESSIONS = [                                          # မြန်မာအခ
 DESCRIPTION = open(os.path.join(os.path.dirname(__file__), "description.txt"), encoding="utf-8").read().strip()
 # -----------------------------
 
+AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio")
+AUDIO_FILTER = "aresample=44100:async=1,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.6"   # volume ပြင်ရန်
+
+def audio_input():
+    """audio/ folder ထဲက သီချင်းတွေကို ရောနှောပြီး အဆုံးမရှိ ပြန်ဖွင့်။ မရှိရင် အသံတိတ်။"""
+    import glob, random
+    files = [f for ext in ("mp3", "m4a", "wav", "ogg", "flac") for f in glob.glob(os.path.join(AUDIO_DIR, "*." + ext))]
+    if not files:
+        print("audio/ ထဲမှာ ဖိုင်မရှိ -> အသံတိတ်", flush=True)
+        return ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    random.shuffle(files)
+    with open("/tmp/playlist.txt", "w", encoding="utf-8") as f:
+        for _ in range(max(1, 400 // len(files))):          # ပုံတူရေးထပ် = ပြန်ဖွင့် (stream_loop မသုံး)
+            random.shuffle(files)
+            for p in files:
+                f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    print(f"audio playlist: {len(files)} tracks", flush=True)
+    return ["-f", "concat", "-safe", "0", "-i", "/tmp/playlist.txt"]
+
 _tok = {"v": None, "exp": 0}
 
 def token():
@@ -101,15 +120,19 @@ def run_session(s, day):
     tee = "|".join(f"[f=flv:onfail=ignore]{b['url']}" for b in broadcasts)   # encode တစ်ခါတည်း၊ output ၃ ခု
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-f", "x11grab", "-draw_mouse", "0", "-framerate", "30", "-video_size", "1280x720", "-i", ":99",
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            *audio_input(),
         "-map", "0:v", "-map", "1:a",
         "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k",
-        "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p", "-g", "60", "-af", AUDIO_FILTER, "-c:a", "aac", "-b:a", "128k",
         "-flags", "+global_header", "-t", str(dur), "-f", "tee", tee])
     for b in broadcasts:
         complete(b["id"])
 
 if __name__ == "__main__":
     day = datetime.now(MMT)
-    for s in (SESSIONS[:1] if TEST else [x for x in SESSIONS if x["name"] == SESSION]):
+    if TEST:   # test ဆိုရင် လက်ရှိအချိန်နဲ့ကိုက်တဲ့ session ကို ရွေး (13:30 မတိုင်ခင် = မနက်၊ ပြီးရင် ညနေ)
+        names = ["morning"] if day.hour * 60 + day.minute < 13 * 60 + 30 else ["evening"]
+    else:
+        names = [SESSION]
+    for s in [x for x in SESSIONS if x["name"] in names]:
         run_session(s, day)
