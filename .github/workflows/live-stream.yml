@@ -35,7 +35,9 @@ jobs:
           sleep 2
           google-chrome --no-sandbox --disable-gpu --disable-dev-shm-usage --kiosk \
             --window-position=0,0 --window-size=1280,720 --disable-web-security \
-            --user-data-dir=/tmp/chrome --no-first-run \
+            --user-data-dir=/tmp/chrome --no-first-run --no-default-browser-check \
+            --disable-translate --disable-features=Translate,TranslateUI \
+            --disable-infobars --disable-notifications --disable-session-crashed-bubble \
             "http://localhost:8080/index.html" >/dev/null 2>&1 &
           sleep 10
           python3 live.py
