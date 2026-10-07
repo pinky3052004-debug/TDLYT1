@@ -1,0 +1,49 @@
+name: YouTube Live 2D
+
+on:
+  workflow_dispatch:             # cron-job.org က API နဲ့ ခေါ်မယ်
+    inputs:
+      session:
+        description: "morning | evening | test"
+        type: choice
+        options: [morning, evening, test]
+        default: test
+
+permissions:
+  contents: write
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y xvfb ffmpeg fonts-noto-core
+
+      - name: Run live
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          SESSION: ${{ inputs.session }}
+        run: |
+          python3 server.py &
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 2
+          google-chrome --no-sandbox --disable-gpu --disable-dev-shm-usage --kiosk \
+            --window-position=0,0 --window-size=1280,720 --disable-web-security \
+            --user-data-dir=/tmp/chrome --no-first-run \
+            "http://localhost:8080/index.html" >/dev/null 2>&1 &
+          sleep 10
+          python3 live.py
+
+      - name: Save state for evening run
+        if: always() && inputs.session != 'test'
+        run: |
+          git config user.name "live-bot"
+          git config user.email "live-bot@users.noreply.github.com"
+          git add state/state.json
+          git diff --cached --quiet || (git commit -m "state $(date -u +%F)" && git pull --rebase && git push)
