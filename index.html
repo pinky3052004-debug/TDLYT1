@@ -267,9 +267,9 @@ const CONFIG = {
 /* 11:00 / 12:01 / 15:00 / 16:30 — ဒီအချိန်ပြတင်းပေါက်အတွင်း API တန်ဖိုးကို JSON အဖြစ် သိမ်းမယ် */
 const SLOTS = {
   "11:00": ["11:00:00", "11:03:00"],
-  "12:01": ["12:01:00", "12:04:00"],
+  "12:01": ["12:01:13", "12:04:00", "once"],   // 12:01:13 နောက်ပိုင်း ပထမဆုံးတန်ဖိုး = final (ထပ်မပြောင်း)
   "15:00": ["15:00:00", "15:03:00"],
-  "16:30": ["16:30:00", "16:33:00"]
+  "16:30": ["16:30:13", "16:33:00", "once"]
 };
 
 function parseApi(raw) {
@@ -339,8 +339,9 @@ function snapshot(now) {
   if (!live || live.date !== now.key || !live.time) return;   // ယနေ့ data မဟုတ်ရင် မသိမ်း
   const snaps = loadJson("snapshots", now.key) || {};
   let changed = false;
-  for (const [k, [from, to]] of Object.entries(SLOTS)) {
-    if (live.time >= from && live.time < to && live.twod) {   // ပြတင်းပေါက်အတွင်း နောက်ဆုံးတန်ဖိုးကို သိမ်း
+  for (const [k, [from, to, once]] of Object.entries(SLOTS)) {
+    if (once && snaps[k]) continue;                           // final ဖြစ်ပြီးသား → ထပ်မသိမ်း
+    if (live.time >= from && live.time < to && live.twod) {   // ပြတင်းပေါက်အတွင်း သိမ်း
       snaps[k] = { twod: live.twod, set: live.set, value: live.value };
       changed = true;
     }
@@ -365,6 +366,13 @@ async function poll() {
   render();
 }
 
+/* ထွက်ချိန်နားက ၂ စက္ကန့်တစ်ခါ၊ ကျန်ချိန် ၁၀ စက္ကန့်တစ်ခါ */
+function nextDelay() {
+  const n = mmNow(), t = n.h * 3600 + n.m * 60 + n.s;
+  const fast = [[12*3600 + 0*60 + 50, 12*3600 + 1*60 + 40], [16*3600 + 29*60 + 50, 16*3600 + 30*60 + 40]];
+  return fast.some(([a, b]) => t >= a && t <= b) ? 2000 : CONFIG.POLL_MS;
+}
+
 /* ============ Render ============ */
 function fillCard(i, label, now, snap, isFinal) {
   const src = isFinal ? snap : live;
@@ -381,15 +389,16 @@ function render() {
   $("kyi").textContent = getKyi(now.key).join(", ");
 
   const snaps = loadJson("snapshots", now.key) || {};
-  const morning = now.mins < 12 * 60 + 4;
-  $("drawTime").textContent = morning ? "12:01 PM" : "4:30 PM";
+  const morning = now.mins < 13 * 60;
+  
 
   $("setVal").textContent = dash(live && live.set);
   $("am").textContent = dash(snaps["11:00"] && snaps["11:00"].twod);
   $("pm").textContent = dash(snaps["15:00"] && snaps["15:00"].twod);
 
-  const done1 = now.mins >= 12 * 60 + 4 && !!snaps["12:01"];
-  const done2 = now.mins >= 16 * 60 + 33 && !!snaps["16:30"];
+  const done1 = !!snaps["12:01"];
+  const done2 = !!snaps["16:30"];
+  $("drawTime").textContent = (morning && !done1) ? "12:01 PM" : "4:30 PM";
   fillCard(1, "12:01 PM", now, snaps["12:01"], done1);
   fillCard(2, "4:30 PM", now, snaps["16:30"], done2);
 
@@ -412,8 +421,8 @@ addEventListener("resize", fit); fit();
 
 loadState().finally(() => {
   setInterval(render, 1000);
-  setInterval(poll, CONFIG.POLL_MS);
-  render(); poll();
+  render();
+  (function loop() { poll().finally(() => setTimeout(loop, nextDelay())); })();
 });
 </script>
 </body>
