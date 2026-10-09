@@ -28,6 +28,7 @@ jobs:
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           SESSION: ${{ inputs.session }}
+          YT_UPLOAD_CLIP: "1"            # 0 ထားရင် YouTube ကို မတင်ဘဲ artifact သာသိမ်း
         run: |
           python3 server.py &
           export DISPLAY=:99
@@ -49,3 +50,12 @@ jobs:
           git config user.email "live-bot@users.noreply.github.com"
           git add state/state.json
           git diff --cached --quiet || (git commit -m "state $(date -u +%F)" && git pull --rebase && git push)
+
+      - name: Save clip (download လုပ်ယူရန်)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips
+          path: clips/*.mp4
+          if-no-files-found: ignore
+          retention-days: 7
