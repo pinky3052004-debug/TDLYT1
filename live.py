@@ -20,6 +20,22 @@ DESCRIPTION = open(os.path.join(os.path.dirname(__file__), "description.txt"), e
 AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio")
 AUDIO_FILTER = "aresample=44100:async=1,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.6"   # volume ပြင်ရန်
 
+SILENT = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+
+def audio_ok(path):
+    """ဖိုင်က တကယ်ဖွင့်လို့ရတဲ့ audio ဟုတ်မဟုတ် ffprobe နဲ့စစ်၊ မကောင်းရင် ကျော်"""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30)
+        dur = float(r.stdout.strip().split("\n")[0])
+        if r.returncode == 0 and dur > 1:
+            return True
+    except Exception:
+        pass
+    print("skip bad audio:", os.path.basename(path), flush=True)
+    return False
+
 def audio_input():
     """audio/ folder ထဲက သီချင်းတွေကို ရောနှောပြီး အဆုံးမရှိ ပြန်ဖွင့်။ မရှိရင် အသံတိတ်။"""
     import glob, random
@@ -27,6 +43,10 @@ def audio_input():
     if not files:
         print("audio/ ထဲမှာ ဖိုင်မရှိ -> အသံတိတ်", flush=True)
         return ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    files = [f for f in files if audio_ok(f)]
+    if not files:
+        print("audio ဖိုင်အားလုံး မသုံးနိုင် -> အသံတိတ်", flush=True)
+        return SILENT
     random.shuffle(files)
     with open("/tmp/playlist.txt", "w", encoding="utf-8") as f:
         for _ in range(max(1, 400 // len(files))):          # ပုံတူရေးထပ် = ပြန်ဖွင့် (stream_loop မသုံး)
@@ -51,7 +71,7 @@ def token():
     _tok["v"], _tok["exp"] = j["access_token"], time.time() + j["expires_in"]
     return _tok["v"]
 
-def api(method, path, params=None, body=None):
+def api(method, path, params=None, body=None, quiet=False):
     url = "https://www.googleapis.com/youtube/v3/" + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -62,7 +82,8 @@ def api(method, path, params=None, body=None):
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        print("API error:", path, e.read().decode()[:500], flush=True)
+        if not quiet:
+            print("API error:", path, e.read().decode()[:500], flush=True)
         raise
 
 def make_title(day, session, suffix):
@@ -89,10 +110,20 @@ def create_broadcast(title):
     return {"id": br["id"], "url": info["ingestionAddress"] + "/" + key}
 
 def complete(bid):
+    """live ဖြစ်ခဲ့ရင် complete၊ မစခဲ့ဘူးဆိုရင် (stream မတက်) broadcast ကို ဖျက်"""
     try:
-        api("POST", "liveBroadcasts/transition", {"broadcastStatus": "complete", "id": bid, "part": "status"})
-    except Exception:
-        pass   # auto-stop က ဆက်လုပ်ပေးမည်
+        st = api("GET", "liveBroadcasts", {"part": "status", "id": bid}, quiet=True)
+        life = st["items"][0]["status"]["lifeCycleStatus"] if st.get("items") else "gone"
+        if life in ("live", "testing"):
+            api("POST", "liveBroadcasts/transition", {"broadcastStatus": "complete", "id": bid, "part": "status"}, quiet=True)
+            print("completed:", bid, flush=True)
+        elif life in ("created", "ready"):
+            api("DELETE", "liveBroadcasts", {"id": bid}, quiet=True)
+            print("never started -> deleted:", bid, flush=True)
+        else:
+            print("status", life, ":", bid, flush=True)
+    except Exception as e:
+        print("complete skipped:", bid, flush=True)
 
 def at(day, hhmm):
     h, m = map(int, hhmm.split(":"))
@@ -118,13 +149,30 @@ def run_session(s, day):
         return
     dur = max(60, int((end - datetime.now(MMT)).total_seconds()))
     tee = "|".join(f"[f=flv:onfail=ignore]{b['url']}" for b in broadcasts)   # encode တစ်ခါတည်း၊ output ၃ ခု
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "warning",
-        "-f", "x11grab", "-draw_mouse", "0", "-framerate", "30", "-video_size", "1280x720", "-i", ":99",
-            *audio_input(),
-        "-map", "0:v", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k",
-        "-pix_fmt", "yuv420p", "-g", "60", "-af", AUDIO_FILTER, "-c:a", "aac", "-b:a", "128k",
-        "-flags", "+global_header", "-t", str(dur), "-f", "tee", tee])
+    audio = audio_input()
+    fails = 0
+    while True:
+        left = int((end - datetime.now(MMT)).total_seconds())
+        if left < 20:
+            break
+        t0 = time.time()
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-f", "x11grab", "-draw_mouse", "0", "-framerate", "30", "-video_size", "1280x720", "-i", ":99",
+            *audio,
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k",
+            "-pix_fmt", "yuv420p", "-g", "60", "-af", AUDIO_FILTER, "-c:a", "aac", "-b:a", "128k",
+            "-flags", "+global_header", "-t", str(left), "-f", "tee", tee])
+        if r.returncode == 0:
+            break                                  # အချိန်ပြည့်လို့ ပုံမှန်ပြီး
+        fails += 1
+        print(f"ffmpeg exited rc={r.returncode} after {int(time.time()-t0)}s (fail #{fails})", flush=True)
+        if audio is not SILENT:
+            print("-> အသံတိတ်နဲ့ ပြန်ကြိုးစား", flush=True)
+            audio = SILENT
+        if fails >= 5:
+            break
+        time.sleep(5)
     for b in broadcasts:
         complete(b["id"])
 
