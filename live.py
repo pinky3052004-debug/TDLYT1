@@ -14,7 +14,7 @@ SESSIONS = [                                          # မြန်မာအခ
     {"name": "morning", "label": "မနက်", "draw": "12:01 PM", "slot": "12:01", "start": "10:30", "end": "12:30", "clip": ("11:59", "12:02")},
     {"name": "evening", "label": "ညနေ", "draw": "04:30 PM", "slot": "16:30", "start": "14:30", "end": "17:00", "clip": ("16:29", "16:32")},
 ]
-CLIP_TITLE = "({date}) {label} ({draw}) 2D ရလဒ်{result}"   # ဖြတ်ထားတဲ့ video ရဲ့ title အသစ်
+CLIP_TITLE = "({date}) {label} ({draw}) 2D ရလဒ်"   # ဖြတ်ထားတဲ့ video ရဲ့ title အသစ်
 DESCRIPTION = open(os.path.join(os.path.dirname(__file__), "description.txt"), encoding="utf-8").read().strip()
 # -----------------------------
 CLIP_DESCRIPTION = DESCRIPTION
