@@ -14,6 +14,7 @@ SESSIONS = [                                          # မြန်မာအခ
     {"name": "morning", "label": "မနက်", "draw": "12:01 PM", "slot": "12:01", "start": "10:30", "end": "12:30", "clip": ("11:59", "12:02")},
     {"name": "evening", "label": "ညနေ", "draw": "04:30 PM", "slot": "16:30", "start": "14:30", "end": "17:00", "clip": ("16:29", "16:32")},
 ]
+PLAYLIST_TITLE = "2D Result {year}"                           # playlist နာမည် (နှစ်အလိုက်အလိုအလျောက်)
 CLIP_TITLE = "({date}) {label} ({draw}) 2D ရလဒ်"   # ဖြတ်ထားတဲ့ video ရဲ့ title အသစ်
 DESCRIPTION = open(os.path.join(os.path.dirname(__file__), "description.txt"), encoding="utf-8").read().strip()
 # -----------------------------
@@ -186,6 +187,35 @@ def upload_video(path, title, description, privacy):
     except Exception as e:
         print("upload error:", e, flush=True)
 
+def get_playlist_id(title, privacy):
+    """နာမည်တူ playlist ရှိရင်သုံး၊ မရှိရင် အသစ်ဆောက်"""
+    page = None
+    while True:
+        params = {"part": "snippet", "mine": "true", "maxResults": 50}
+        if page:
+            params["pageToken"] = page
+        r = api("GET", "playlists", params)
+        for it in r.get("items", []):
+            if it["snippet"]["title"] == title:
+                return it["id"]
+        page = r.get("nextPageToken")
+        if not page:
+            break
+    r = api("POST", "playlists", {"part": "snippet,status"}, {
+        "snippet": {"title": title, "description": title},
+        "status": {"privacyStatus": privacy}})
+    print("created playlist:", title, flush=True)
+    return r["id"]
+
+def add_to_playlist(video_id, title, privacy):
+    try:
+        pid = get_playlist_id(title, privacy)
+        api("POST", "playlistItems", {"part": "snippet"}, {"snippet": {
+            "playlistId": pid, "resourceId": {"kind": "youtube#video", "videoId": video_id}}})
+        print("added to playlist:", title, flush=True)
+    except Exception as e:
+        print("playlist failed:", e, flush=True)
+
 def clip_and_upload(s, day, run_start):
     if TEST:
         w0 = run_start + timedelta(seconds=60); w1 = w0 + timedelta(seconds=120)
@@ -198,7 +228,10 @@ def clip_and_upload(s, day, run_start):
                                                            result=read_result(s["slot"]))
     out = make_clip(w0, w1, os.path.join(CLIPS_DIR, f"{day:%Y-%m-%d}_{s['name']}.mp4"))
     if out and UPLOAD_CLIP:
-        upload_video(out, title, CLIP_DESCRIPTION, "private" if TEST else "public")
+        vid = upload_video(out, title, CLIP_DESCRIPTION, "private" if TEST else "public")
+        if vid:
+            pl = PLAYLIST_TITLE.format(year=day.year)
+            add_to_playlist(vid, ("TEST " + pl) if TEST else pl, "private" if TEST else "public")
     shutil.rmtree(REC_DIR, ignore_errors=True)
 
 def at(day, hhmm):
