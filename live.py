@@ -9,7 +9,8 @@ SESSION = os.environ.get("SESSION", "morning")   # morning | evening | test
 TEST = SESSION == "test"
 
 # ---------- ပြင်ရန် ----------
-SUFFIXES = ["", " VIP", " VVIP"]                      # live ၃ ခု၏ title နောက်ဆက်တွဲ
+SUFFIXES = [""]                                       # အခု live ၁ ခုတည်း
+# SUFFIXES = ["", " VIP", " VVIP"]                    # live ၃ ခု ပြန်လုပ်ချင်ရင် အပေါ်စာကြောင်းကိုဖျက်ပြီး ဒါကိုဖွင့်
 SESSIONS = [                                          # မြန်မာအချိန်
     {"name": "morning", "label": "မနက်", "draw": "12:01 PM", "slot": "12:01", "start": "10:30", "end": "12:30", "clip": ("11:59", "12:02")},
     {"name": "evening", "label": "ညနေ", "draw": "04:30 PM", "slot": "16:30", "start": "14:30", "end": "17:00", "clip": ("16:29", "16:32")},
