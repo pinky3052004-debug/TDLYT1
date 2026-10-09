@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """YouTube broadcast ဖန်တီး + ffmpeg နဲ့ stream (မနက်/ညနေ ၂ ကြိမ် × ၃ channel title)"""
-import os, json, time, subprocess, urllib.request, urllib.parse, urllib.error
+import os, json, time, glob, shutil, subprocess, urllib.request, urllib.parse, urllib.error
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -11,11 +11,17 @@ TEST = SESSION == "test"
 # ---------- ပြင်ရန် ----------
 SUFFIXES = ["", " VIP", " VVIP"]                      # live ၃ ခု၏ title နောက်ဆက်တွဲ
 SESSIONS = [                                          # မြန်မာအချိန်
-    {"name": "morning", "label": "မနက်", "draw": "12:01 PM", "start": "10:30", "end": "12:30"},
-    {"name": "evening", "label": "ညနေ", "draw": "04:30 PM", "start": "14:30", "end": "17:00"},
+    {"name": "morning", "label": "မနက်", "draw": "12:01 PM", "slot": "12:01", "start": "10:30", "end": "12:30", "clip": ("11:59", "12:02")},
+    {"name": "evening", "label": "ညနေ", "draw": "04:30 PM", "slot": "16:30", "start": "14:30", "end": "17:00", "clip": ("16:29", "16:32")},
 ]
+CLIP_TITLE = "({date}) {label} ({draw}) 2D ရလဒ်{result}"   # ဖြတ်ထားတဲ့ video ရဲ့ title အသစ်
 DESCRIPTION = open(os.path.join(os.path.dirname(__file__), "description.txt"), encoding="utf-8").read().strip()
 # -----------------------------
+CLIP_DESCRIPTION = DESCRIPTION
+UPLOAD_CLIP = os.environ.get("YT_UPLOAD_CLIP", "1") == "1"
+BASE = os.path.dirname(os.path.abspath(__file__))
+REC_DIR = "/tmp/rec"                       # stream ကို ၁ မိနစ်စီ အပိုင်းလေးတွေအဖြစ် မှတ်တမ်းသိမ်း
+CLIPS_DIR = os.path.join(BASE, "clips")
 
 AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio")
 AUDIO_FILTER = "aresample=44100:async=1,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.6"   # volume ပြင်ရန်
@@ -125,6 +131,76 @@ def complete(bid):
     except Exception as e:
         print("complete skipped:", bid, flush=True)
 
+def read_result(slot):
+    try:
+        st = json.load(open(os.path.join(BASE, "state", "state.json"), encoding="utf-8"))
+        return " - " + str(st["snapshots"][slot]["twod"])
+    except Exception:
+        return ""
+
+def make_clip(w0, w1, out):
+    """REC_DIR ထဲက အပိုင်းလေးတွေထဲက w0..w1 (UTC) ကို ဖြတ်ပြီး out (mp4) ထုတ်"""
+    segs = []
+    for f in sorted(glob.glob(os.path.join(REC_DIR, "*.ts"))):
+        try:
+            t = datetime.strptime(os.path.basename(f)[:15], "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+            segs.append((t, f))
+        except ValueError:
+            pass
+    pick = [(t, f) for t, f in segs if t < w1 and t + timedelta(seconds=75) > w0]
+    if not pick:
+        print("clip: ဒီအချိန်အတွက် မှတ်တမ်းမရှိ", flush=True); return None
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open("/tmp/clip_list.txt", "w") as f:
+        for _, p in pick:
+            f.write(f"file '{p}'\n")
+    ss = max(0.0, (w0 - pick[0][0]).total_seconds())
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
+        "-i", "/tmp/clip_list.txt", "-ss", f"{ss:.2f}", "-t", f"{(w1 - w0).total_seconds():.0f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out])
+    if r.returncode != 0 or not os.path.exists(out):
+        print("clip: ffmpeg မအောင်မြင်", flush=True); return None
+    print("clip saved:", out, flush=True)
+    return out
+
+def upload_video(path, title, description, privacy):
+    size = os.path.getsize(path)
+    meta = {"snippet": {"title": title, "description": description, "categoryId": "24"},
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}}
+    req = urllib.request.Request(
+        "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        data=json.dumps(meta).encode(), method="POST", headers={
+            "Authorization": "Bearer " + token(), "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Length": str(size), "X-Upload-Content-Type": "video/mp4"})
+    try:
+        loc = urllib.request.urlopen(req, timeout=60).headers["Location"]
+        with open(path, "rb") as f:
+            put = urllib.request.Request(loc, data=f, method="PUT",
+                headers={"Content-Length": str(size), "Content-Type": "video/mp4"})
+            vid = json.loads(urllib.request.urlopen(put, timeout=900).read())["id"]
+        print("uploaded clip:", vid, "|", title, flush=True)
+        return vid
+    except urllib.error.HTTPError as e:
+        print("upload error:", e.read().decode()[:400], flush=True)
+    except Exception as e:
+        print("upload error:", e, flush=True)
+
+def clip_and_upload(s, day, run_start):
+    if TEST:
+        w0 = run_start + timedelta(seconds=60); w1 = w0 + timedelta(seconds=120)
+    elif s.get("clip"):
+        w0 = at(day, s["clip"][0]).astimezone(timezone.utc); w1 = at(day, s["clip"][1]).astimezone(timezone.utc)
+    else:
+        return
+    d = f"{day.day}.{day.month}.{day.year}"
+    title = ("TEST " if TEST else "") + CLIP_TITLE.format(date=d, label=s["label"], draw=s["draw"],
+                                                           result=read_result(s["slot"]))
+    out = make_clip(w0, w1, os.path.join(CLIPS_DIR, f"{day:%Y-%m-%d}_{s['name']}.mp4"))
+    if out and UPLOAD_CLIP:
+        upload_video(out, title, CLIP_DESCRIPTION, "private" if TEST else "public")
+    shutil.rmtree(REC_DIR, ignore_errors=True)
+
 def at(day, hhmm):
     h, m = map(int, hhmm.split(":"))
     return datetime(day.year, day.month, day.day, h, m, tzinfo=MMT)
@@ -148,7 +224,11 @@ def run_session(s, day):
     if not broadcasts:
         return
     dur = max(60, int((end - datetime.now(MMT)).total_seconds()))
-    tee = "|".join(f"[f=flv:onfail=ignore]{b['url']}" for b in broadcasts)   # encode တစ်ခါတည်း၊ output ၃ ခု
+    shutil.rmtree(REC_DIR, ignore_errors=True); os.makedirs(REC_DIR)
+    outs = [f"[f=flv:onfail=ignore]{b['url']}" for b in broadcasts]          # encode တစ်ခါတည်း၊ output ၃ ခု
+    outs.append(f"[f=segment:segment_time=60:segment_format=mpegts:strftime=1:reset_timestamps=1:onfail=ignore]{REC_DIR}/%Y%m%d_%H%M%S.ts")
+    tee = "|".join(outs)
+    run_start = datetime.now(timezone.utc)
     audio = audio_input()
     fails = 0
     while True:
@@ -162,7 +242,8 @@ def run_session(s, day):
             "-map", "0:v", "-map", "1:a",
             "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k", "-maxrate", "3000k", "-bufsize", "6000k",
             "-pix_fmt", "yuv420p", "-g", "60", "-af", AUDIO_FILTER, "-c:a", "aac", "-b:a", "128k",
-            "-flags", "+global_header", "-t", str(left), "-f", "tee", tee])
+            "-flags", "+global_header", "-t", str(left), "-f", "tee", tee],
+            env=dict(os.environ, TZ="UTC"))
         if r.returncode == 0:
             break                                  # အချိန်ပြည့်လို့ ပုံမှန်ပြီး
         fails += 1
@@ -175,6 +256,10 @@ def run_session(s, day):
         time.sleep(5)
     for b in broadcasts:
         complete(b["id"])
+    try:
+        clip_and_upload(s, day, run_start)      # 11:59-12:02 ကို ဖြတ် -> video အသစ် (တစ်ခုတည်း)
+    except Exception as e:
+        print("clip failed:", e, flush=True)
 
 if __name__ == "__main__":
     day = datetime.now(MMT)
