@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """YouTube broadcast ဖန်တီး + ffmpeg နဲ့ stream (မနက်/ညနေ ၂ ကြိမ် × ၃ channel title)"""
-import os, sys, json, time, glob, shutil, signal, subprocess, urllib.request, urllib.parse, urllib.error
+import os, re, sys, json, time, glob, shutil, signal, subprocess, urllib.request, urllib.parse, urllib.error
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -239,9 +239,43 @@ def at(day, hhmm):
     h, m = map(int, hhmm.split(":"))
     return datetime(day.year, day.month, day.day, h, m, tzinfo=MMT)
 
-def notify(msg):
+HOLIDAY_FILE = os.path.join(BASE, "holidays.txt")
+
+def load_holidays():
+    """holidays.txt -> {date: မှတ်စု}   (DD/MM/YYYY သို့ YYYY-MM-DD ကို လိုင်းအစမှာ ရှာ၊ # နဲ့စတာ ကျော်)"""
+    out = {}
+    try:
+        lines = open(HOLIDAY_FILE, encoding="utf-8").read().splitlines()
+    except OSError:
+        print("holidays.txt မတွေ့ -> ပိတ်ရက်စစ်ခြင်း မလုပ်", flush=True)
+        return out
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(.*)", ln)
+        try:
+            if m:
+                d = datetime(int(m[3]), int(m[2]), int(m[1])).date(); note = m[4]
+            else:
+                m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})\s*(.*)", ln)
+                if not m:
+                    continue
+                d = datetime(int(m[1]), int(m[2]), int(m[3])).date(); note = m[4]
+            out[d] = note.lstrip("- ").strip()
+        except ValueError:
+            print("holidays.txt: ရက်စွဲမှားနေ ->", ln, flush=True)
+    return out
+
+def holiday_reason(day):
+    """ဈေးကွက်ပိတ်ရက်ဆိုရင် အကြောင်းပြချက်၊ မဟုတ်ရင် None"""
+    if day.weekday() >= 5:
+        return "စနေ/တနင်္ဂနွေ (ဈေးကွက်ပိတ်)"
+    return load_holidays().get(day.date())
+
+def notify(msg, error=True):
     """GitHub log (အနီရောင် error) + Telegram (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID ထည့်ထားရင်)"""
-    print("::error::" + msg, flush=True)
+    print(("::error::" if error else "::notice::") + msg, flush=True)
     tok, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if tok and chat:
         try:
@@ -340,6 +374,16 @@ def run_session(s, day):
 
 if __name__ == "__main__":
     day = datetime.now(MMT)
+    reason = None if TEST else holiday_reason(day)           # test ဆိုရင် ပိတ်ရက်ကို မစစ်
+    if "--check-holiday" in sys.argv:                        # workflow အစမှာ ခေါ်၊ ပိတ်ရက်ဆိုရင် အားလုံးကျော်
+        print(f"{day:%d/%m/%Y}: " + (f"ပိတ်ရက် - {reason}" if reason else "ဈေးကွက်ဖွင့်ရက်"), flush=True)
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                f.write("skip=" + ("true" if reason else "false") + "\n")
+        sys.exit(0)
+    if reason:
+        notify(f"{day:%d/%m/%Y} ဈေးကွက်ပိတ်ရက် ({reason}) -> live မလွှင့်ပါ", error=False)
+        sys.exit(0)
     if TEST:   # test: လက်ရှိအချိန်နဲ့ကိုက်တဲ့ session (13:30 မတိုင်ခင် = မနက်၊ ပြီးရင် ညနေ)
         names = ["morning"] if day.hour * 60 + day.minute < 13 * 60 + 30 else ["evening"]
     else:
