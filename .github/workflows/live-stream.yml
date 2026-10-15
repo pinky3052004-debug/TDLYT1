@@ -23,10 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check market holiday          # ပိတ်ရက်/စနေ တနင်္ဂနွေဆိုရင် အောက်က အဆင့်အားလုံး ကျော်
+        id: check
+        env:
+          SESSION: ${{ inputs.session }}
+        run: python3 live.py --check-holiday
+
       - name: Install tools
+        if: steps.check.outputs.skip != 'true'
         run: sudo apt-get update && sudo apt-get install -y xvfb ffmpeg fonts-noto-core
 
       - name: Run live
+        if: steps.check.outputs.skip != 'true'
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -54,7 +62,7 @@ jobs:
           python3 live.py
 
       - name: Save state for evening run
-        if: always() && inputs.session != 'test'
+        if: always() && inputs.session != 'test' && steps.check.outputs.skip != 'true'
         run: |
           git config user.name "live-bot"
           git config user.email "live-bot@users.noreply.github.com"
@@ -62,7 +70,7 @@ jobs:
           git diff --cached --quiet || (git commit -m "state $(date -u +%F)" && git pull --rebase && git push)
 
       - name: Save clip (download လုပ်ယူရန်)
-        if: always()
+        if: always() && steps.check.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: clips
