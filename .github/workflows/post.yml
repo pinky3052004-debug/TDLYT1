@@ -8,6 +8,10 @@ on:
         type: choice
         options: ["12:01", "16:30"]
         default: "12:01"
+      force:
+        description: "ပိတ်ရက်/စနေ တနင်္ဂနွေမှာလည်း စမ်းမယ် (test)"
+        type: boolean
+        default: false
 
 jobs:
   post:
@@ -20,13 +24,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-core
 
       - name: Make post image
-        run: python3 make_post.py "${{ inputs.slot }}"
+        run: python3 make_post.py "${{ inputs.slot }}" ${{ inputs.force && '--force' || '' }}
 
       - name: Save image
         if: hashFiles('posts/*.png') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: post-${{ inputs.slot }}
+          name: post-${{ inputs.slot == '12:01' && '1201' || '1630' }}-${{ github.run_number }}
           path: |
             posts/*.png
             posts/*.txt
